@@ -14,6 +14,10 @@ const settingsContainer = document.querySelector('.settings');
 const mainContainer = document.querySelector('.main');
 const resultContainer = document.querySelector('.result');
 
+// Sound effects
+const errorSound = new Audio('sounds/error.wav');
+const successSound = new Audio('sounds/success.wav');
+
 // Game variables
 let currentText = '';
 let timeLeft = 60;
@@ -22,9 +26,10 @@ let charIndex = 0;
 let mistakes = 0;
 let isTyping = false;
 let totalTyped = 0;
+let isLoading = false;
 
-// Text samples by difficulty
-const textSamples = {
+// Fallback text samples by difficulty (in case API fails)
+const fallbackTextSamples = {
     easy: [
         "The quick brown fox jumps over the lazy dog. Simple sentences are easy to type.",
         "I enjoy reading books in my free time. What about you? Do you like reading too?",
@@ -55,6 +60,74 @@ const textSamples = {
     ]
 };
 
+// API configuration for different text generation services
+const apiConfig = {
+    // Random Quotes API
+    quotable: {
+        url: 'https://api.quotable.io/quotes/random',
+        params: {
+            easy: { minLength: 50, maxLength: 100 },
+            medium: { minLength: 100, maxLength: 200 },
+            hard: { minLength: 200, maxLength: 300 },
+            expert: { minLength: 300, maxLength: 500 }
+        },
+        processResponse: (data) => {
+            if (data && data.length > 0) {
+                return `${data[0].content} - ${data[0].author}`;
+            }
+            return null;
+        }
+    },
+    // Random Sentences API
+    sentenceGenerator: {
+        url: 'https://random-word-api.herokuapp.com/sentence',
+        params: {
+            easy: { number: 3 },
+            medium: { number: 5 },
+            hard: { number: 8 },
+            expert: { number: 12 }
+        },
+        processResponse: (data) => {
+            if (data) {
+                return data;
+            }
+            return null;
+        }
+    },
+    // Bacon Ipsum API (Lorem Ipsum with a meat theme)
+    baconIpsum: {
+        url: 'https://baconipsum.com/api/',
+        params: {
+            easy: { type: 'all-meat', sentences: 2, 'start-with-lorem': 1 },
+            medium: { type: 'all-meat', sentences: 4, 'start-with-lorem': 1 },
+            hard: { type: 'meat-and-filler', sentences: 6, 'start-with-lorem': 1 },
+            expert: { type: 'meat-and-filler', sentences: 10, 'start-with-lorem': 1 }
+        },
+        processResponse: (data) => {
+            if (data && data.length > 0) {
+                return data[0];
+            }
+            return null;
+        }
+    },
+    // Lorem Ipsum API
+    loremIpsum: {
+        url: 'https://loripsum.net/api/1/short/plaintext',
+        params: {
+            easy: { url: 'https://loripsum.net/api/1/short/plaintext' },
+            medium: { url: 'https://loripsum.net/api/1/medium/plaintext' },
+            hard: { url: 'https://loripsum.net/api/2/medium/plaintext' },
+            expert: { url: 'https://loripsum.net/api/2/long/plaintext' }
+        },
+        processResponse: (data) => {
+            if (data) {
+                return data.trim();
+            }
+            return null;
+        }
+    }
+};
+
 // Initialize the game
 function init() {
     startBtn.addEventListener('click', startGame);
@@ -63,9 +136,27 @@ function init() {
 }
 
 // Start the typing test
-function startGame() {
+async function startGame() {
     const difficulty = difficultySelect.value;
-    currentText = getRandomText(difficulty);
+    
+    // Show loading state
+    startBtn.disabled = true;
+    startBtn.textContent = 'Loading...';
+    isLoading = true;
+    
+    try {
+        // Try to get text from API
+        currentText = await fetchRandomText(difficulty);
+    } catch (error) {
+        console.error('Error fetching text from API:', error);
+        // Fallback to local text samples
+        currentText = getFallbackText(difficulty);
+    }
+    
+    // Reset loading state
+    startBtn.disabled = false;
+    startBtn.textContent = 'Start Test';
+    isLoading = false;
     
     // Display text with character spans for tracking
     textDisplay.innerHTML = '';
@@ -101,9 +192,48 @@ function startGame() {
     startTimer();
 }
 
-// Get random text based on difficulty
-function getRandomText(difficulty) {
-    const texts = textSamples[difficulty];
+// Fetch random text from API based on difficulty
+async function fetchRandomText(difficulty) {
+    // Select a random API from our configuration
+    const apiKeys = Object.keys(apiConfig);
+    const randomApiKey = apiKeys[Math.floor(Math.random() * apiKeys.length)];
+    const api = apiConfig[randomApiKey];
+    
+    // Special case for Lorem Ipsum API which uses different URLs instead of query params
+    if (randomApiKey === 'loremIpsum') {
+        const response = await fetch(api.params[difficulty].url);
+        if (!response.ok) {
+            throw new Error(`API request failed with status ${response.status}`);
+        }
+        const data = await response.text();
+        const processedText = api.processResponse(data);
+        if (processedText) {
+            return processedText;
+        }
+        throw new Error('Failed to process API response');
+    }
+    
+    // For other APIs that use query parameters
+    const params = new URLSearchParams(api.params[difficulty]);
+    const response = await fetch(`${api.url}?${params.toString()}`);
+    
+    if (!response.ok) {
+        throw new Error(`API request failed with status ${response.status}`);
+    }
+    
+    const data = await response.json();
+    const processedText = api.processResponse(data);
+    
+    if (processedText) {
+        return processedText;
+    }
+    
+    throw new Error('Failed to process API response');
+}
+
+// Get fallback text if API fails
+function getFallbackText(difficulty) {
+    const texts = fallbackTextSamples[difficulty];
     return texts[Math.floor(Math.random() * texts.length)];
 }
 
@@ -139,6 +269,10 @@ function processTyping() {
             chars[charIndex].classList.add('incorrect');
             chars[charIndex].classList.remove('correct');
             mistakes++;
+            
+            // Play error sound when typing mistake occurs
+            errorSound.currentTime = 0;
+            errorSound.play().catch(e => console.log('Error playing sound:', e));
         }
         
         // Move to next character
@@ -197,6 +331,10 @@ function endGame() {
     resultWpm.innerText = wpm;
     resultAccuracy.innerText = `${accuracy}%`;
     resultChars.innerText = `${charIndex - mistakes}/${charIndex}`;
+    
+    // Play success sound when showing results
+    successSound.currentTime = 0;
+    successSound.play().catch(e => console.log('Error playing sound:', e));
     
     // Show result screen
     mainContainer.classList.add('hidden');
